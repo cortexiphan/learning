@@ -45,7 +45,55 @@ func (rw *RWMutex) RLock() {
 
 ## 释放只读锁
 
+```go
+func (rw *RWMutex) RUnlock() {
+    // 释放只读锁和其他读者互不影响。如果减一之后readerCount还是大于或者等于零，那证明此时没有写者等待，可以直接释放。
+    // 如果小于零，那就进入下面的慢路径，也就是看是否需要由自己唤醒写者。
+    if r := atomic.AddInt32(&rw.readerCount, -1); r < 0 {
+        // Outlined slow-path to allow the fast-path to be inlined
+        rw.rUnlockSlow(r)
+    }
+}
+
+func (rw *RWMutex) rUnlockSlow(r int32) {
+    if r+1 == 0 || r+1 == -rwmutexMaxReaders {
+        fatal("sync: RUnlock of unlocked RWMutex")
+    }
+    // 每个释放读锁的读者，在发现当前有写者等待时，都要对readerWait减一，减完之后，
+    // 如果大于1，那自己不是最后一个释放的读者，不用唤醒写者。
+    // 如果等于1，那自己的确是最后一个释放的读者，唤醒写者。
+    // 如果小于1，则是写者申请和读者释放几乎同时，且读者先完成readerWait的减一，不用唤醒。
+    if atomic.AddInt32(&rw.readerWait, -1) == 0 {
+        // The last reader unblocks the writer.
+        runtime_Semrelease(&rw.writerSem, false, 1)
+    }
+}
+```
+
 ## 申请写锁
+
+```go
+func (rw *RWMutex) Lock() {
+    // 先申请互斥锁，和其他写者互斥。
+    rw.w.Lock()
+    // 将readerCount减去一个rwmutexMaxReaders，这样后续的读者就知道已经有写者在等待了。
+    // 注意readerCount此时仍然保留读者数量信息，r就是当前读者的数量。
+    r := atomic.AddInt32(&rw.readerCount, -rwmutexMaxReaders) + rwmutexMaxReaders
+    // 这里判断写者是否需要等待。尤其是写者申请和最后一个读者的释放同时的时候。
+    // 如果r == 0，那没有读者，也就不用等待，直接得到锁。
+    // 如果r != 0，那将readerWait加上r，看其结果
+    // 如果readerWait等于0，证明这r个读者恰好刚刚退出了，所以不用等待。
+    // 如果readerWait不等于0，那至少有一个读者还没有执行readerWait的减一，那必定有一个读者会执行到释放信号量那一步，所以这里先等待在信号量上。
+    // 这里readerWait会被r个读者分别减一，以及被写者加r，这r+1个事件可以随意排列也不影响正确性。
+    // 在读者角度，因为readerWait初始值是0，如果读者发现减完结果为0，那么说明写者加r已经完成，正在等待信号量，自己是最后一个读者，需要执行唤醒。
+    // 如果发现减完小于0，那么写者还没有加r，自己也许是最后一个读者，但这时自己先于写者释放了，也就不用堵塞写者了；如果自己不是最后一个读者，那让最后一个读者关心唤醒的事情吧。
+    // 如果减完大于0，那还有读者没有到这一步呢，唤醒的事让后面的读者处理吧。
+    // 在写者角度，加完r的readerWait是一定大于等于0的，如果等于0那意味着读者都退出了，不用阻塞，否则有一个读者会走到唤醒步骤，自己先堵塞。
+    if r != 0 && atomic.AddInt32(&rw.readerWait, r) != 0 {
+        runtime_SemacquireMutex(&rw.writerSem, false, 0)
+    }
+}
+```
 
 ## 释放写锁
 
