@@ -107,8 +107,8 @@ func (rw *RWMutex) Unlock() {
     r := atomic.AddInt32(&rw.readerCount, rwmutexMaxReaders)
     // rwmutexMaxReaders比可能的goroutine数量大很多个数量级，所以如果r大于rwmutexMaxReaders，
     // 那只可能是（没有持锁的情况下）重复释放，导致多次加法。
-    // 注意这里不需要担心溢出，因为rwmutexMaxReaders的值是2^30，至少第一次加的时候不会溢出，
-    // 而这时候肯定已经panic了，后面也没有溢出的机会了。
+    // 注意这里不需要担心溢出，因为rwmutexMaxReaders的值是2^30，至少第一次重复加的时候不会溢出，
+    // 而这时候肯定已经被下上面的判断panic了，后面也没有溢出的机会了。
     if r >= rwmutexMaxReaders {
         race.Enable()
         fatal("sync: Unlock of unlocked RWMutex")
