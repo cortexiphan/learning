@@ -2,11 +2,11 @@
 
 ## RWMutex的作用
 
-### 增加并行度
+### 1.增加并行度
 
 让多个读者或者一个写者得到锁。
 
-### 保证公平性
+### 2.保证公平性
 
 多个读者持锁时，新的写者到达并堵塞，此后到达的读者也要等待，等持锁的读者都退出后，上面堵塞的写者先被唤醒。
 
@@ -26,7 +26,9 @@ const rwmutexMaxReaders = 1 << 30
 
 ```
 
-## 申请只读锁
+## 加解锁分析
+
+### 1.申请只读锁
 
 ```go
 
@@ -43,7 +45,7 @@ func (rw *RWMutex) RLock() {
 
 ```
 
-## 释放只读锁
+### 2.释放只读锁
 
 ```go
 func (rw *RWMutex) RUnlock() {
@@ -70,7 +72,7 @@ func (rw *RWMutex) rUnlockSlow(r int32) {
 }
 ```
 
-## 申请写锁
+### 3.申请写锁
 
 ```go
 func (rw *RWMutex) Lock() {
@@ -95,7 +97,7 @@ func (rw *RWMutex) Lock() {
 }
 ```
 
-## 释放写锁
+### 4.释放写锁
 
 注意此时默认当前goroutine持有了rw.w互斥量的。
 
@@ -121,3 +123,11 @@ func (rw *RWMutex) Unlock() {
     rw.w.Unlock()
 }
 ```
+
+## 性能分析
+
+读写锁在读多写少的情况下增加了读的并发度，比互斥量更好。但这只是在lock contention不严重的情况是真的，如果在cpu核心数很大，多个goroutine同时竞争一个锁的情况下，读写锁也会越来越慢。
+
+原因是加解锁有一个AddInt32原子操作，这是一个Read-Modify-Write操作，每次修改都要先读到最新值，然后再修改。根据MESI协议，每个CPU修改之后都要通知其他CPU将该cache line标记为dirty，这样多个CPU同时修改时，就会导致缓存的反复失效。CPU越多这个情况越严重。
+
+如果使用的场景是RWMutex+map，那可以考虑使用sync.Map，当然要符合sync.Map的设计针对的两种场景才行，否则应该重新设计。
