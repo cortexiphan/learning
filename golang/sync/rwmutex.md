@@ -128,6 +128,24 @@ func (rw *RWMutex) Unlock() {
 
 读写锁在读多写少的情况下增加了读的并发度，比互斥量更好。但这只是在lock contention不严重的情况是真的，如果在cpu核心数很大，多个goroutine同时竞争一个锁的情况下，读写锁也会越来越慢。
 
-原因是加解锁有一个AddInt32原子操作，这是一个Read-Modify-Write操作，每次修改都要先读到最新值，然后再修改。根据MESI协议，每个CPU修改之后都要通知其他CPU将该cache line标记为dirty，这样多个CPU同时修改时，就会导致缓存的反复失效。CPU越多这个情况越严重。
+原因是加解锁有一个AddInt32原子操作，这是一个Read-Modify-Write操作，每次修改都要先读到最新值，然后再修改。根据MESI协议，每个CPU修改之后都要通知其他CPU将该cache line标记为无效，这样多个CPU同时修改时，就会导致缓存的反复失效。CPU越多这个情况越严重。
 
 如果使用的场景是RWMutex+map，那可以考虑使用sync.Map，当然要符合sync.Map的设计针对的两种场景才行，否则应该重新设计。
+
+### MESI协议
+
+I： Invalid，此状态下要读取或者修改都要在总线上发布。
+
+S：多个cache都有该block，并且是干净的。
+
+E：只有当前cache有这个block，并且是干净的。
+
+M：只有当前cache有这个block，并且已经被修改了。
+
+对E状态的block写，直接变成M状态，不用在总线通知其他cache。
+
+对S状态的block写，需要在总线通知其他cache要invalidate这个block，然后自己的block变成M。
+
+对I状态的block写，实际是write miss。如果此时没有其他cache有这个block，直接读下级内存，并标记block为M。
+如果此时有其他多个cache为S，或者其他一个E，读下级内存，并且通知其他cache设置该block为I，当前block为M。
+如果此时有其他一个为M。另外那个为M的cache将block写入下级内存，标记为I，然后原来的cache再读下级内存，标记为M。
