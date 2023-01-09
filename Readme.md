@@ -1,3 +1,3 @@
 # Learning
 
-this is a learning not about golang/microservice
+this is a learning note about golang/microservice
